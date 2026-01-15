@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DAO EV TECH | Fleet Monitoring</title>
+
+<style>
+body {
+    margin: 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: #0b0b0b;
+    color: #ffffff;
+}
+
+.header {
+    padding: 20px 40px;
+    background: #000;
+    border-bottom: 2px solid #1f1f1f;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 26px;
+    color: #00e676;
+}
+
+.header span {
+    font-size: 14px;
+    color: #bbbbbb;
+}
+
+.container {
+    padding: 30px;
+    display: flex;
+    justify-content: center;
+}
+
+.ev-card {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 10px;
+    padding: 20px;
+    width: 60%;
+}
+
+.ev-title {
+    font-size: 18px;
+    margin-bottom: 15px;
+    color: #00bcd4;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 10px;
+    text-align: center;
+    border-bottom: 1px solid #222;
+}
+
+th {
+    background: #1c1c1c;
+    color: #ccc;
+}
+
+.NORMAL {
+    color: #00e676;
+    font-weight: bold;
+}
+
+.FAULT {
+    color: #ff5252;
+    font-weight: bold;
+}
+
+.NO_DATA {
+    color: #ffca28;
+    font-weight: bold;
+}
+
+.footer {
+    text-align: center;
+    padding: 15px;
+    color: #777;
+    font-size: 13px;
+    margin-top: 30px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- HEADER -->
+<div class="header">
+    <h1>DAO EV TECH</h1>
+    <span>EV Fleet Monitoring Dashboard</span>
+</div>
+
+<!-- MAIN -->
+<div class="container">
+    <div class="ev-card">
+        <div class="ev-title">🚗 Dao EV – TEST – 001</div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Sensor</th>
+                    <th>Value</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="data">
+                <!-- Data loads here -->
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+    © 2026 DAO EV TECH | Real-Time Fleet Health Monitoring
+</div>
+
+<script>
+const SENSOR_LABELS = {
+    "vehicle_speed_kmh": "Speed (km/h)",
+    "motor_rpm": "Motor RPM",
+    "battery_voltage_v": "Battery Voltage (V)",
+    "battery_current_a": "Battery Current (A)",
+    "motor_temp_c": "Motor Temperature (°C)",
+    "soc_percent": "State of Charge (%)"
+};
+
+function loadData() {
+    fetch("/status")
+        .then(res => res.json())
+        .then(data => {
+            const tbody = document.getElementById("data");
+            tbody.innerHTML = "";
+
+            Object.keys(SENSOR_LABELS).forEach(key => {
+                const info = data[key] || { value: "--", status: "NO_DATA" };
+
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td>${SENSOR_LABELS[key]}</td>
+                    <td>${info.value}</td>
+                    <td class="${info.status}">${info.status}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        })
+        .catch(err => console.error("Fetch error:", err));
+}
+
+setInterval(loadData, 2000);
+loadData();
+</script>
+
+</body>
+</html>

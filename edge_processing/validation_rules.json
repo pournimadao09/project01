@@ -1,0 +1,19 @@
+{
+  "speed": {
+    "max": 120
+  },
+  "voltage": {
+    "min": 48,
+    "warning": 50
+  },
+  "current": {
+    "max": 30
+  },
+  "temperature": {
+    "warning": 60,
+    "critical": 70
+  },
+  "humidity": {
+    "max": 80
+  }
+}
