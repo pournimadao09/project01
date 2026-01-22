@@ -1,27 +1,42 @@
-from queue import Queue, Full, Empty
+"""
+Message Queue
+Delta-based publishing (send only changed values)
+PDF Phase 3 compliant
+"""
 
-# In-memory FIFO queue (edge buffer)
-_message_queue = Queue(maxsize=1000)
+import sqlite3
+from cloud_connector.config import DB_PATH
 
-def enqueue_message(payload: dict):
-    """
-    Add telemetry to queue (non-blocking).
-    """
-    try:
-        _message_queue.put(payload, block=False)
-    except Full:
-        # Drop oldest if queue is full
-        try:
-            _message_queue.get(block=False)
-            _message_queue.put(payload, block=False)
-        except Empty:
-            pass
+_last_published = {}
 
-def dequeue_message():
-    """
-    Get next telemetry message.
-    """
-    try:
-        return _message_queue.get(block=False)
-    except Empty:
-        return None
+def fetch_changed_telemetry():
+    global _last_published
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT sensor_type, value
+        FROM sensor_readings
+        WHERE id IN (
+            SELECT MAX(id)
+            FROM sensor_readings
+            GROUP BY sensor_type
+        )
+    """)
+
+    changed_payload = {}
+
+    for sensor, value in cursor.fetchall():
+
+        if sensor not in _last_published:
+            changed_payload[sensor] = value
+            _last_published[sensor] = value
+            continue
+
+        if _last_published[sensor] != value:
+            changed_payload[sensor] = value
+            _last_published[sensor] = value
+
+    conn.close()
+    return changed_payload

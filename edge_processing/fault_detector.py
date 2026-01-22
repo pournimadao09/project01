@@ -1,108 +1,210 @@
-import sys
-import os
-import time
-import json
+"""
+Fault Detection & Edge Processing
+"""
 
-# PROJECT ROOT PATH
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(ROOT_DIR)
-
-from data_logger.database import fetch_last_n_readings
-
-print("=== FAULT DETECTION ENGINE (PHASE 4 – EDGE PROCESSING) ===")
-
-# PDF-ALIGNED THRESHOLDS (UNCHANGED)
-BATTERY_TEMP_WARNING = 55
-BATTERY_TEMP_CRITICAL = 60
-
-BATTERY_VOLT_WARNING = 50
-BATTERY_VOLT_CRITICAL = 48
+from data_logger.database import init_database, insert_sensor_data
+from data_logger.circular_buffer import critical_buffer
 
 
+SENSOR_RANGES = {
+    "motor_speed_rpm": (0, 10000),
+    "vehicle_speed_kmh": (0, 120),
+    "battery_voltage_v": (48, 84),
+    "battery_current_a": (-200, 200),
+    "state_of_charge_percent": (0, 100),
+    "motor_temperature_c": (20, 120)
+}
 
-# FAULT CHECK FUNCTION
-
-def check_faults():
-    faults = []
-
-    temp = fetch_last_n_readings("motor_temp_c", 2)
-    volt = fetch_last_n_readings("battery_voltage_v", 2)
-    curr = fetch_last_n_readings("battery_current_a", 2)
-    speed = fetch_last_n_readings("vehicle_speed_kmh", 1)
-    rpm = fetch_last_n_readings("motor_rpm", 1)
-    soc = fetch_last_n_readings("soc_percent", 2)
-
-    # Battery Temperature
-    if temp:
-        t_val = temp[0]["value"]
-
-        if t_val > BATTERY_TEMP_CRITICAL:
-            faults.append(("CRITICAL", "Battery Temp > 60°C", t_val, "°C"))
-        elif t_val > BATTERY_TEMP_WARNING:
-            faults.append(("WARNING", "Battery Temp > 55°C", t_val, "°C"))
-
-        if len(temp) == 2 and abs(temp[0]["value"] - temp[1]["value"]) > 10:
-            faults.append(("WARNING", "Battery Temp Rapid Rise", t_val, "°C"))
-
-    # Battery Voltage
-    if volt:
-        v_val = volt[0]["value"]
-
-        if v_val < BATTERY_VOLT_CRITICAL:
-            faults.append(("CRITICAL", "Battery Voltage < 48V", v_val, "V"))
-        elif v_val < BATTERY_VOLT_WARNING:
-            faults.append(("WARNING", "Battery Voltage < 50V", v_val, "V"))
-
-        if len(volt) == 2 and (volt[1]["value"] - volt[0]["value"]) > 5:
-            faults.append(("ERROR", "Battery Voltage Sudden Drop", v_val, "V"))
-
-    # Correlation: RPM vs Speed
-    if rpm and speed:
-        if rpm[0]["value"] > 0 and speed[0]["value"] == 0:
-            faults.append(("WARNING", "RPM > 0 but Speed = 0", rpm[0]["value"], "rpm"))
-
-    # Correlation: Current vs SOC
-    if curr and soc and len(soc) == 2:
-        if curr[0]["value"] > 0 and soc[0]["value"] > soc[1]["value"]:
-            faults.append(("ERROR", "SOC Increasing While Discharging", soc[0]["value"], "%"))
-
-    return faults
+SAFETY_THRESHOLDS = {
+    "battery_voltage_v": {
+        "warning": 50,
+        "critical": 48
+    },
+    "motor_temperature_c": {
+        "warning": 55,
+        "critical": 60
+    }
+}
 
 
-# CONTINUOUS MONITORING
 
-while True:
-    detected_faults = check_faults()
+init_database()
+previous_reading = None
 
-    status = {
-        "overall": "NORMAL",
-        "alerts": []
+
+
+
+def create_alert(severity, sensor, reason, value):
+    return {
+        "severity": severity,
+        "sensor": sensor,
+        "reason": reason,
+        "value": round(value, 2)
     }
 
-    if detected_faults:
-        for severity, msg, value, unit in detected_faults:
-            status["alerts"].append({
-                "severity": severity,
-                "message": msg,
-                "value": value,
-                "unit": unit
-            })
+def process_edge_data(sensor_packet):
+    global previous_reading
 
-        severities = [f[0] for f in detected_faults]
-        if "CRITICAL" in severities:
-            status["overall"] = "CRITICAL"
-        elif "ERROR" in severities:
-            status["overall"] = "ERROR"
-        else:
-            status["overall"] = "WARNING"
+    alerts = []
+    overall_status = "GOOD"
 
-    output_json = {
-        "device_id": "EV_TEST_001",
-        "timestamp": int(time.time() * 1000),
-        "status": status
+    sensors = sensor_packet["sensors"]
+    timestamp = sensor_packet["timestamp"]
+
+    #  RANGE VALIDATION
+    for sensor, value in sensors.items():
+        if sensor not in SENSOR_RANGES:
+            continue  # safety guard, no logic change
+
+        min_val, max_val = SENSOR_RANGES[sensor]
+        if value < min_val or value > max_val:
+            alerts.append(
+                create_alert(
+                    "ERROR",
+                    sensor,
+                    "Value out of valid range",
+                    value
+                )
+            )
+            overall_status = "ERROR"
+
+    #  RATE OF CHANGE DETECTION
+    if previous_reading:
+        dt = (timestamp - previous_reading["timestamp"]) / 1000.0
+
+        if dt > 0:
+            temp_diff = abs(
+                sensors["motor_temperature_c"]
+                - previous_reading["sensors"]["motor_temperature_c"]
+            )
+
+            if temp_diff > 10 and dt < 5:
+                alerts.append(
+                    create_alert(
+                        "WARNING",
+                        "motor_temperature_c",
+                        "Temperature rising too fast",
+                        sensors["motor_temperature_c"]
+                    )
+                )
+                if overall_status == "GOOD":
+                    overall_status = "WARNING"
+
+            voltage_drop = (
+                previous_reading["sensors"]["battery_voltage_v"]
+                - sensors["battery_voltage_v"]
+            )
+
+            if voltage_drop > 5 and dt < 1:
+                alerts.append(
+                    create_alert(
+                        "ERROR",
+                        "battery_voltage_v",
+                        "Rapid voltage drop detected",
+                        sensors["battery_voltage_v"]
+                    )
+                )
+                overall_status = "ERROR"
+
+    #  CORRELATION CHECKS
+    if sensors["motor_speed_rpm"] > 0 and sensors["vehicle_speed_kmh"] == 0:
+        alerts.append(
+            create_alert(
+                "WARNING",
+                "motor_speed_rpm",
+                "Motor RPM > 0 but vehicle speed is 0",
+                sensors["motor_speed_rpm"]
+            )
+        )
+        if overall_status == "GOOD":
+            overall_status = "WARNING"
+
+    if previous_reading:
+        if (
+            sensors["battery_current_a"] > 0 and
+            sensors["state_of_charge_percent"]
+            > previous_reading["sensors"]["state_of_charge_percent"]
+        ):
+            alerts.append(
+                create_alert(
+                    "ERROR",
+                    "battery_current_a",
+                    "SOC increasing while current is positive",
+                    sensors["battery_current_a"]
+                )
+            )
+            overall_status = "ERROR"
+
+    #  SAFETY THRESHOLD CHECKS
+    for sensor, limits in SAFETY_THRESHOLDS.items():
+        if sensor not in sensors:
+            continue  # safety guard
+
+        value = sensors[sensor]
+
+        if value <= limits["critical"]:
+            alerts.append(
+                create_alert(
+                    "CRITICAL",
+                    sensor,
+                    "Critical safety threshold breached",
+                    value
+                )
+            )
+            overall_status = "CRITICAL"
+
+        elif value <= limits["warning"]:
+            alerts.append(
+                create_alert(
+                    "WARNING",
+                    sensor,
+                    "Safety warning threshold crossed",
+                    value
+                )
+            )
+            if overall_status == "GOOD":
+                overall_status = "WARNING"
+
+    
+    for alert in alerts:
+        if alert["severity"] in ("ERROR", "CRITICAL"):
+            critical_buffer.add_event(
+                device_id=sensor_packet["device_id"],
+                sensor=alert["sensor"],
+                value=alert["value"],
+                severity=alert["severity"],
+                reason=alert["reason"]
+            )
+
+    insert_sensor_data(
+        device_id=sensor_packet["device_id"],
+        timestamp=timestamp,
+        sensors=sensors,
+        quality=overall_status
+    )
+
+    
+    # OUTPUT FORMAT
+  
+    processed_output = {
+        "device_id": sensor_packet["device_id"],
+        "timestamp": timestamp,
+        "data_type": "telemetry",
+        "payload": sensors,
+        "status": {
+            "overall": overall_status,
+            "alerts": alerts
+        }
     }
 
-    # ALWAYS PRINT (Heartbeat + Faults)
-    print(json.dumps(output_json, indent=2))
+    previous_reading = {
+        "timestamp": timestamp,
+        "sensors": sensors.copy()
+    }
 
-    time.sleep(2)
+    print("\nEDGE PROCESSED DATA:")
+    print(processed_output)
+    print("CRITICAL BUFFER SIZE:", critical_buffer.size())
+
+
+    return processed_output
